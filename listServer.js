@@ -71,6 +71,8 @@ function translateConfigOptionToBool(value) {
 	}
 }
 
+
+
 // Constant references to various modules.
 const expressServer = require("express");
 const expressRateLimiter = require("express-rate-limit");
@@ -95,6 +97,10 @@ if(translateConfigOptionToBool(configuration.Auth.useAccessControl)) {
 	allowedServerAddresses = configuration.Auth.allowedIpAddresses.split(",");
 }
 
+function getClientIp(req) {
+	return req.headers['x-forwarded-for'].split(':')[0];
+}
+
 // - Authentication
 // apiCheckKey: Checks to see if the client specified key matches.
 function apiCheckKey(clientKey) {
@@ -109,7 +115,7 @@ function apiCheckKey(clientKey) {
 function apiIsKeyFromRequestIsBad(req) {
 	if(typeof req.body.serverKey === "undefined" || !apiCheckKey(req.body.serverKey))
 	{
-		loggerInstance.warn(`${req.headers['x-forwarded-for']} used a wrong key: ${req.body.serverKey}`);
+		loggerInstance.warn(`${getClientIp(req)} used a wrong key: ${req.body.serverKey}`);
 		return true;
 	} else {
 		return false;
@@ -142,7 +148,7 @@ function apiDoesThisServerExistByAddressPort(ipAddress, port) {
 // -- Request Handling
 // denyRequest: Generic function that denies requests.
 function denyRequest (req, res) {
-	loggerInstance.warn(`Request from ${req.headers['x-forwarded-for']} denied. Tried ${req.method} method on path: ${req.path}`);
+	loggerInstance.warn(`Request from ${getClientIp(req)} denied. Tried ${req.method} method on path: ${req.path}`);
 	return res.sendStatus(400);
 }
 
@@ -155,7 +161,7 @@ function apiGetServerList(req, res) {
 	else
 	{
 		// Shows if keys match for those getting list server details.
-		loggerInstance.info(`${req.headers['x-forwarded-for']} accepted; communication key matched: '${req.body.serverKey}'`);
+		loggerInstance.info(`${getClientIp(req)} accepted; communication key matched: '${req.body.serverKey}'`);
 	}
 
 	// A client wants the server list. Compile it and send out via JSON.
@@ -168,7 +174,7 @@ function apiGetServerList(req, res) {
 	knownServers.forEach((knownServer) => {
 		// If we're hiding servers from the same IP, filter them out.
 		if(translateConfigOptionToBool(configuration.Pruning.dontShowServersOnSameIp)) {
-			if(knownServer.ip === req.headers['x-forwarded-for']) {
+			if(knownServer.ip === getClientIp(req)) {
 				loggerInstance.info(`Skipped server '${knownServer.uuid}', reason: looks like it's hosted on the same IP as this client`);
 				return;
 			}
@@ -191,7 +197,7 @@ function apiGetServerList(req, res) {
 		"updateFrequency": configuration.Pruning.ingameUpdateFrequency
 	};
 
-	loggerInstance.info(`Replying to ${req.headers['x-forwarded-for']} with known server list.`);
+	loggerInstance.info(`Replying to ${getClientIp(req)} with known server list.`);
 	return res.json(returnedServerList);
 }
 
@@ -245,7 +251,7 @@ function apiUpdateServerInList(req, res) {
 	notTheServerInQuestion.push(updatedServer);
 	knownServers = notTheServerInQuestion;
 
-	loggerInstance.info(`Updated information for '${updatedServer.name}', requested by ${req.headers['x-forwarded-for']}`);
+	loggerInstance.info(`Updated information for '${updatedServer.name}', requested by ${getClientIp(req)}`);
 	return res.send("OK\n");
 }
 
@@ -258,25 +264,25 @@ function apiAddToServerList(req, res) {
 	}
 
 	// Are we using access control? If so, are they allowed to do this?
-	if(translateConfigOptionToBool(configuration.Auth.useAccessControl) && !allowedServerAddresses.includes(req.headers['x-forwarded-for'])) {
+	if(translateConfigOptionToBool(configuration.Auth.useAccessControl) && !allowedServerAddresses.includes(getClientIp(req))) {
 		// Not allowed.
-		loggerInstance.warn(`Request from ${req.headers['x-forwarded-for']} denied: Not in ACL.`);
+		loggerInstance.warn(`Request from ${getClientIp(req)} denied: Not in ACL.`);
 		return res.sendStatus(403);
 	}
 
 	// Sanity Checks
 	if(typeof req.body === "undefined") {
-		loggerInstance.warn(`Request from ${req.headers['x-forwarded-for']} denied: There was no body attached to the request.`);
+		loggerInstance.warn(`Request from ${getClientIp(req)} denied: There was no body attached to the request.`);
 		return res.sendStatus(400);
 	}
 	
 	if(typeof req.body.serverUuid === "undefined" || typeof req.body.serverName === "undefined" || typeof req.body.serverPort === "undefined") {
-		loggerInstance.warn(`Request from ${req.headers['x-forwarded-for']} denied: UUID, name and/or port is bogus.`);
+		loggerInstance.warn(`Request from ${getClientIp(req)} denied: UUID, name and/or port is bogus.`);
 		return res.sendStatus(400);
 	}
 
 	if(isNaN(req.body.serverPort) || req.body.serverPort < 0 || req.body.serverPort > 65535) {
-		loggerInstance.warn(`Request from ${req.headers['x-forwarded-for']} denied: Port was out of bounds.`);
+		loggerInstance.warn(`Request from ${getClientIp(req)} denied: Port was out of bounds.`);
 		return res.sendStatus(400);
 	}
 	
@@ -287,23 +293,23 @@ function apiAddToServerList(req, res) {
 	if(apiDoesServerExist(req.body.serverUuid))
 	{
 		// Collision - update!
-		loggerInstance.info(`Update server: '${req.body.serverName}' from ${req.headers['x-forwarded-for']}. UUID: '${req.body.serverUuid}'`);
+		loggerInstance.info(`Update server: '${req.body.serverName}' from ${getClientIp(req)}. UUID: '${req.body.serverUuid}'`);
 		apiUpdateServerInList(req, res);
 	}
 	else
 	{
 		// Checkpoint 2: IP and Port collision check
 		// If there's already a server on this IP or Port then don't add the server to the cache. This will stop duplicates.
-		if(apiDoesThisServerExistByAddressPort(req.headers['x-forwarded-for'], req.body.serverPort)) {
+		if(apiDoesThisServerExistByAddressPort(getClientIp(req), req.body.serverPort)) {
 			// Collision - abort!
-			loggerInstance.warn(`Server IP and Port collision check failed for ${req.headers['x-forwarded-for']} with UUID '${req.body.serverUuid}'.`);
+			loggerInstance.warn(`Server IP and Port collision check failed for ${getClientIp(req)} with UUID '${req.body.serverUuid}'.`);
 			return res.sendStatus(400);
 		}
 
 		// We'll get the IP address directly, don't worry about that
 		var newServer = { 
 			"uuid": req.body.serverUuid, 
-			"ip": req.headers['x-forwarded-for'], 
+			"ip": getClientIp(req), 
 			"name": req.body.serverName, 
 			"port": parseInt(req.body.serverPort, 10),
 			"lastUpdated": (Date.now() + (configuration.Pruning.inactiveServerRemovalMinutes * 60 * 1000))
@@ -330,7 +336,7 @@ function apiAddToServerList(req, res) {
 
 		knownServers.push(newServer);
 
-		loggerInstance.info(`New server added: '${req.body.serverName}' from ${req.headers['x-forwarded-for']}. UUID: '${req.body.serverUuid}'`);
+		loggerInstance.info(`New server added: '${req.body.serverName}' from ${getClientIp(req)}. UUID: '${req.body.serverUuid}'`);
 		return res.send("OK\n");
 	}
 }
@@ -344,29 +350,29 @@ function apiRemoveFromServerList(req, res) {
 	}
 
 	// Are we using access control? If so, are they allowed to do this?
-	if(translateConfigOptionToBool(configuration.Auth.useAccessControl) && !allowedServerAddresses.includes(req.headers['x-forwarded-for'])) {
+	if(translateConfigOptionToBool(configuration.Auth.useAccessControl) && !allowedServerAddresses.includes(getClientIp(req))) {
 		// Not allowed.
-		loggerInstance.warn(`Remove server request blocked from ${req.headers['x-forwarded-for']}. They are not known in our allowed IPs list.`);
+		loggerInstance.warn(`Remove server request blocked from ${getClientIp(req)}. They are not known in our allowed IPs list.`);
 		return res.sendStatus(403);
 	}
 
 	if(typeof req.body === "undefined") {
-		loggerInstance.warn(`Request from ${req.headers['x-forwarded-for']} denied: no POST data was provided.`);
+		loggerInstance.warn(`Request from ${getClientIp(req)} denied: no POST data was provided.`);
 		return res.sendStatus(400);
 	}
 
 	// Server isn't specified?	
 	if(typeof req.body.serverUuid === "undefined") {
-		loggerInstance.warn(`Request from ${req.headers['x-forwarded-for']} denied: Server UUID was not provided.`);
+		loggerInstance.warn(`Request from ${getClientIp(req)} denied: Server UUID was not provided.`);
 		return res.sendStatus(400);
 	}
 	
 	if(!apiDoesServerExist(req.body.serverUuid, knownServers)) {
-		loggerInstance.warn(`Request from ${req.headers['x-forwarded-for']} denied: Can't delete server with UUID '${req.body.serverUuid}' from cache.`);
+		loggerInstance.warn(`Request from ${getClientIp(req)} denied: Can't delete server with UUID '${req.body.serverUuid}' from cache.`);
 		return res.sendStatus(400);
 	} else {
 		knownServers = knownServers.filter((server) => server.uuid !== req.body.serverUuid);
-		loggerInstance.info(`Deleted server '${req.body.serverUuid}' from cache (requested by ${req.headers['x-forwarded-for']}).`);
+		loggerInstance.info(`Deleted server '${req.body.serverUuid}' from cache (requested by ${getClientIp(req)}).`);
 		return res.send("OK\n");
 	}
 }
